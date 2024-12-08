@@ -9,8 +9,8 @@ fn main() {
     let root_hash = verify_and_calculate_sha256_root_hash(&mut data_file, &mut hash_file).unwrap();
     match root_hash {
         Ok(x) => println!("{}", faster_hex::hex_string(&x)),
-        Err(error_offset) => {
-            eprintln!("Error at offset {}", error_offset);
+        Err(e) => {
+            eprintln!("Error: {:?}", e);
             std::process::exit(1);
         }
     }

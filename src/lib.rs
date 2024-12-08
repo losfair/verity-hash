@@ -1,9 +1,18 @@
+//! `dm-verity` hash image verifier.
+
 use std::{
     io::{self, Read, Seek},
     mem::MaybeUninit,
 };
 
 use sha2::{Digest, Sha256};
+
+#[derive(Debug, Clone)]
+pub struct VerificationError {
+    pub offset: usize,
+    pub expected_hash: [u8; 32],
+    pub actual_hash: [u8; 32],
+}
 
 #[repr(packed)]
 struct VeritySb {
@@ -21,10 +30,13 @@ struct VeritySb {
     _pad2: [u8; 168],
 }
 
+/// Verifies that the dm-verity hash image provided in `hash_file` contains a
+/// self-consistent Merkle tree, and the tree is also consistent with the disk
+/// image provided as `data_file`. Returns the root hash if successful.
 pub fn verify_and_calculate_sha256_root_hash(
     data_file: &mut impl Read,
     hash_file: &mut (impl Read + Seek),
-) -> io::Result<Result<[u8; 32], u64>> {
+) -> io::Result<Result<[u8; 32], VerificationError>> {
     let sb = read_superblock(hash_file)?;
     if &sb.signature != b"verity\0\0" {
         return Err(io::Error::new(
@@ -135,7 +147,10 @@ pub fn verify_and_calculate_sha256_root_hash(
 
                 next_layer_end_cursor += x as u64;
             }
-            Err(offset) => return Ok(Err(next_layer_end_cursor + offset as u64)),
+            Err(mut e) => {
+                e.offset += next_layer_end_cursor as usize;
+                return Ok(Err(e));
+            }
         }
     }
 
@@ -163,7 +178,7 @@ fn verify_layer(
     child_layer: &mut dyn Read,
     salt: &[u8],
     child_block_size: usize,
-) -> io::Result<Result<usize, usize>> {
+) -> io::Result<Result<usize, VerificationError>> {
     assert!(parent_block.len() % 32 == 0);
     let num_hashes = parent_block.len() / 32;
     let gen_hashes = |start| {
@@ -203,7 +218,11 @@ fn verify_layer(
                 faster_hex::hex_string(expected_hash),
                 faster_hex::hex_string(&h[..])
             );
-            return Ok(Err(consumed_size));
+            return Ok(Err(VerificationError {
+                offset: consumed_size,
+                expected_hash: expected_hash.try_into().unwrap(),
+                actual_hash: h.into(),
+            }));
         }
     }
     Ok(Ok(consumed_size))
